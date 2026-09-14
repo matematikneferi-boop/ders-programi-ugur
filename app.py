@@ -165,12 +165,21 @@ def solve():
 
     model.Minimize(total_shortfall * 1000 + sum(spread_penalty_terms))
 
+    # Render'in ucretsiz plani sadece ~0.1 CPU (bir cekirdegin onda biri)
+    # veriyor. num_search_workers=8 gibi cok sayida paralel worker,
+    # OLMAYAN CPU'ya zorlanir -> gercek aramaya ayrilan zaman artmaz, sadece
+    # context-switch yuku biner ve sonuc TEK worker'dan bile kotu cikabilir.
+    # Bu yuzden ucretsiz/dusuk-CPU ortamda num_search_workers=1 cok daha
+    # iyi sonuc verir. Istemci "maxTimeSeconds" gonderirse onu kullan
+    # (gunicorn --timeout 120 oldugu icin 100 sn'ye kadar guvenli).
+    max_time = float(data.get("maxTimeSeconds", 90.0))
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 25.0
-    solver.parameters.num_search_workers = 8
+    solver.parameters.max_time_in_seconds = max_time
+    solver.parameters.num_search_workers = 1
     status = solver.Solve(model)
 
     status_name = solver.StatusName(status)
+    is_proven_optimal = (status == cp_model.OPTIMAL)
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return jsonify({
             "status": status_name,
@@ -232,12 +241,24 @@ def solve():
                 )
             else:
                 diag_code = "CAKISMA"
+                if is_proven_optimal:
+                    kesinlik = (
+                        "Cozucu suresi icinde ISPATLANMIS OPTIMUM'a ulasti; yani bu "
+                        "kisitlar altinda matematiksel olarak daha iyisi YOK."
+                    )
+                else:
+                    kesinlik = (
+                        "ONEMLI: cozucu suresi (max_time_in_seconds) dolmadan durdu, yani "
+                        "bu SADECE o ana kadar bulunan en iyi sonuc — daha uzun sure ile "
+                        "(ya da tekrar calistirarak) daha az yerlesemeyen saat cikma "
+                        "ihtimali var, bu henuz kesin 'imkansiz' anlamina gelmez."
+                    )
                 diag_text = (
                     f"CAKISMA: bu ogretmenin musait saati ({cap}) toplam yukune ({total_need}) "
                     f"teorik olarak yetiyor, ama diger sinif/derslerle ayni saatlere denk "
-                    f"geldigi icin bu {missing} saat yerlesemedi. Musaitligi biraz genisletmek, "
-                    f"bu dersin gunlere dagilimini (max_per_day) gevsetmek ya da bu ogretmenin "
-                    f"diger derslerinin saatlerini gozden gecirmek gerekebilir."
+                    f"geldigi icin bu {missing} saat yerlesemedi. {kesinlik} Musaitligi biraz "
+                    f"genisletmek, bu dersin gunlere dagilimini (max_per_day) gevsetmek ya da "
+                    f"bu ogretmenin diger derslerinin saatlerini gozden gecirmek gerekebilir."
                 )
             unplaced.append({
                 "assignmentId": a["id"], "teacherId": a["teacherId"], "classId": a["classId"],
@@ -248,6 +269,7 @@ def solve():
 
     return jsonify({
         "status": status_name,
+        "isProvenOptimal": is_proven_optimal,
         "schedule": schedule,
         "unplaced": unplaced,
         "solveSeconds": round(time.time() - t0, 2),
