@@ -195,13 +195,55 @@ def solve():
                     "assignmentId": aid,
                 }
 
+    # --- Yerlesemeyen saatler icin gercek tani: KAPASITE mi, CAKISMA mi? ---
+    # Bir ogretmenin haftalik musait (kilitli olmayan) saat sayisi, o
+    # ogretmene atanmis TUM derslerin toplam saatinden azsa, bu gercek bir
+    # kapasite asimi (musaitligi gevsetmeden cozulemez). Musaitlik
+    # yetiyorsa ama yine de yerlesemediyse, sorun bu ogretmenin/sinifin
+    # diger derslerle saat orta-catismasi (musaitlik biraz genisletilebilir
+    # ya da ders/sinif dagilimi gozden gecirilebilir).
+    teacher_capacity = {}
+    for t in teachers:
+        cap = 0
+        for d in days:
+            for p in periods:
+                if not unavail_map.get((t["id"], d, p), False):
+                    cap += 1
+        teacher_capacity[t["id"]] = cap
+
+    teacher_total_hours = {}
+    for a in valid_assignments:
+        teacher_total_hours[a["teacherId"]] = teacher_total_hours.get(a["teacherId"], 0) + a["hours"]
+
     unplaced = []
     for a in valid_assignments:
         missing = solver.Value(shortfall[a["id"]])
         if missing > 0:
+            tid = a["teacherId"]
+            cap = teacher_capacity.get(tid, 0)
+            total_need = teacher_total_hours.get(tid, 0)
+            if total_need > cap:
+                diag_code = "KAPASITE_ASIMI"
+                diag_text = (
+                    f"KAPASITE ASIMI: bu ogretmenin toplam ders yuku {total_need} saat, "
+                    f"ama musait oldugu (kilitli/kirmizi olmayan) saat sayisi sadece {cap} saat. "
+                    f"Bu, Musaitlik sekmesindeki kirmizi saatleri azaltmadan ya da ders yukunu "
+                    f"dusurmeden cozulemez."
+                )
+            else:
+                diag_code = "CAKISMA"
+                diag_text = (
+                    f"CAKISMA: bu ogretmenin musait saati ({cap}) toplam yukune ({total_need}) "
+                    f"teorik olarak yetiyor, ama diger sinif/derslerle ayni saatlere denk "
+                    f"geldigi icin bu {missing} saat yerlesemedi. Musaitligi biraz genisletmek, "
+                    f"bu dersin gunlere dagilimini (max_per_day) gevsetmek ya da bu ogretmenin "
+                    f"diger derslerinin saatlerini gozden gecirmek gerekebilir."
+                )
             unplaced.append({
                 "assignmentId": a["id"], "teacherId": a["teacherId"], "classId": a["classId"],
                 "subject": a["subject"], "missingHours": missing,
+                "teacherCapacity": cap, "teacherTotalHours": total_need,
+                "diagnosisCode": diag_code, "diagnosis": diag_text,
             })
 
     return jsonify({
